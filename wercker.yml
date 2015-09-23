@@ -5,6 +5,11 @@ build:
         - script:
             name: build ham
             code: scons
+    after-steps:
+        - slack-notifier:
+            url: $SLACK_URL
+            channel: executive
+            username: myamazingbotname
 
 deploy:
     steps:
