@@ -16,4 +16,4 @@ deploy:
         - github-upload-asset:
             token: $GITHUB_TOKEN
             file: hample
-            release_id: 1853187
+            release_id: 1853286
