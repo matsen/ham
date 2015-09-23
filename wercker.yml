@@ -1,0 +1,16 @@
+box: matsengrp/cpp
+
+build:
+    steps:
+        - script:
+            name: build ham
+            code: scons
+
+deploy:
+    steps:
+        - github-create-release:
+            token: $GITHUB_TOKEN
+            tag: v1.0.0
+        - github-upload-asset:
+            token: $GITHUB_TOKEN
+            file: hample
