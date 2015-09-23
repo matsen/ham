@@ -3,3 +3,6 @@
 /hample
 *.o
 bcrham
+_builds
+_projects
+_steps
