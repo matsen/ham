@@ -1,25 +1,37 @@
 #include "jobholder.h"
 
 // ----------------------------------------------------------------------------------------
+KBounds KBounds::LogicalOr(KBounds rhs) {
+  KBounds kbr(rhs); // return value
+  if(vmin < kbr.vmin) kbr.vmin = vmin;
+  if(dmin < kbr.dmin) kbr.dmin = dmin;
+  if(vmax > kbr.vmax) kbr.vmax = vmax;
+  if(dmax > kbr.dmax) kbr.dmax = dmax;
+  return kbr;
+}
+
+// ----------------------------------------------------------------------------------------
 void Result::check_boundaries(KSet best, KBounds kbounds) {
-  if(kbounds.vmax - kbounds.vmin <= 1 || kbounds.dmax - kbounds.dmin <= 2) return; // if k space is very narrow, we expect the max to be on the boundary, so ignore boundary errors
+  // if(kbounds.vmax - kbounds.vmin <= 1 || kbounds.dmax - kbounds.dmin <= 2) return; // if k space is very narrow, we expect the max to be on the boundary, so ignore boundary errors
+
+  int delta(2);  // be VERY VERY CAREFUL about subtracting move than the value off of a size_t. Yes, I know I should follow the google standards and not use unsigned integers but it wasn't my choice at the start... I'll switch eventually
 
   // see if we need to expand
   if(best.v == kbounds.vmin) {
     boundary_error_ = true;
-    better_kbounds_.vmin = max((size_t)1, kbounds.vmin - 1);
+    better_kbounds_.vmin = max((int)1, (int)kbounds.vmin - delta);
   }
   if(best.v == kbounds.vmax - 1) {
     boundary_error_ = true;
-    better_kbounds_.vmax = kbounds.vmax + 1;
+    better_kbounds_.vmax = kbounds.vmax + delta;
   }
   if(best.d == kbounds.dmin) {
     boundary_error_ = true;
-    better_kbounds_.dmin = max((size_t)1, kbounds.dmin - 1);
+    better_kbounds_.dmin = max((int)1, (int)kbounds.dmin - delta);
   }
   if(best.d == kbounds.dmax - 1) {
     boundary_error_ = true;
-    better_kbounds_.dmax = kbounds.dmax + 1;
+    better_kbounds_.dmax = kbounds.dmax + delta;
   }
 
   if(boundary_error_ && better_kbounds_.equals(kbounds))
@@ -31,10 +43,10 @@ void HMMHolder::CacheAll() {
   for(auto & region : gl_.regions_) {
     for(auto & gene : gl_.names_[region]) {
       string infname(hmm_dir_ + "/" + gl_.SanitizeName(gene) + ".yaml");
-      if (ifstream(infname)) {
-	cout << "    read " << infname << endl;
-	hmms_[gene] = new Model;
-	hmms_[gene]->Parse(infname);
+      if(ifstream(infname)) {
+        cout << "    read " << infname << endl;
+        hmms_[gene] = new Model;
+        hmms_[gene]->Parse(infname);
       }
     }
   }
@@ -58,7 +70,7 @@ HMMHolder::~HMMHolder() {
 }
 
 // ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-JobHolder::JobHolder(GermLines &gl, HMMHolder &hmms, string algorithm, string only_gene_str):
+JobHolder::JobHolder(GermLines &gl, HMMHolder &hmms, string algorithm, vector<string> only_genes):
   gl_(gl),
   hmms_(hmms),
   algorithm_(algorithm),
@@ -66,19 +78,14 @@ JobHolder::JobHolder(GermLines &gl, HMMHolder &hmms, string algorithm, string on
   chunk_cache_(false),
   // total_score_(-INFINITY),
   n_best_events_(5) {
-  if(only_gene_str.size() > 0) {
-    for(auto & region : gl_.regions_)
+  if(only_genes.size() > 0) {
+    for(auto & region : gl_.regions_)  // initialize
       only_genes_[region] = set<string>();
-    while(true) {
-      size_t i_next_colon(only_gene_str.find(":"));
-      string gene = only_gene_str.substr(0, i_next_colon); // get the next gene name
+    for(auto & gene : only_genes)  // insert each gene in the proper region
       only_genes_[gl_.GetRegion(gene)].insert(gene);
-      only_gene_str = only_gene_str.substr(i_next_colon + 1); // then excise it from only_gene_str
-      if(i_next_colon == string::npos)
-        break;
-    }
-    for(auto & region : gl_.regions_)
-      assert(only_genes_[region].size() > 0);
+    for(auto & region : gl_.regions_) // then make sure we have at least one gene for each region
+      if(only_genes_[region].size() == 0)
+        throw runtime_error("ERROR jobholder didn't get any genes for " + region + " region");
   }
 }
 
@@ -108,11 +115,11 @@ Sequences JobHolder::GetSubSeqs(Sequences &seqs, KSet kset, string region) {
   // get subsequences for one region
   size_t k_v(kset.v), k_d(kset.d);
   if(region == "v")
-    return seqs.GetSubSequences(0, k_v);  // v region (plus vd insert) runs from zero up to k_v
+    return Sequences(seqs, 0, k_v);  // v region (plus vd insert) runs from zero up to k_v
   else if(region == "d")
-    return seqs.GetSubSequences(k_v, k_d);  // d region (plus dj insert) runs from k_v up to k_v + k_d
+    return Sequences(seqs, k_v, k_d);  // d region (plus dj insert) runs from k_v up to k_v + k_d
   else if(region == "j")
-    return seqs.GetSubSequences(k_v + k_d, seqs.GetSequenceLength() - k_v - k_d);  // j region runs from k_v + k_d to end
+    return Sequences(seqs, k_v + k_d, seqs.GetSequenceLength() - k_v - k_d);  // j region runs from k_v + k_d to end
   else
     assert(0);
 }
@@ -137,7 +144,6 @@ Result JobHolder::Run(Sequence seq, KBounds kbounds) {
 Result JobHolder::Run(Sequences seqs, KBounds kbounds) {
   assert(kbounds.vmax > kbounds.vmin && kbounds.dmax > kbounds.dmin); // make sure max values for k_v and k_d are greater than their min values
   assert(kbounds.vmin > 0 && kbounds.dmin > 0);  // you get the loveliest little seg fault if you accidentally pass in zero for a lower bound
-  assert(seqs.n_seqs() == 1 || seqs.n_seqs() == 2);
   Clear();
   assert(trellisi_.size() == 0 && paths_.size() == 0 && all_scores_.size() == 0);
   map<KSet, double> best_scores; // best score for each kset (summed over regions)
@@ -151,10 +157,8 @@ Result JobHolder::Run(Sequences seqs, KBounds kbounds) {
   KSet best_kset(0, 0);
   double *total_score = &result.total_score_;  // total score for all ksets
   int n_too_long(0);
-  // for(size_t k_v = kbounds.vmin; k_v < kbounds.vmax; ++k_v) {
-  //   for(size_t k_d = kbounds.dmin; k_d < kbounds.dmax; ++k_d) {
-  for(size_t k_v = kbounds.vmax-1; k_v >= kbounds.vmin; --k_v) {
-    for(size_t k_d = kbounds.dmax-1; k_d >= kbounds.dmin; --k_d) {
+  for(size_t k_v = kbounds.vmax - 1; k_v >= kbounds.vmin; --k_v) {
+    for(size_t k_d = kbounds.dmax - 1; k_d >= kbounds.dmin; --k_d) {
       if(k_v + k_d >= seqs.GetSequenceLength()) {
         ++n_too_long;
         continue;
@@ -175,7 +179,7 @@ Result JobHolder::Run(Sequences seqs, KBounds kbounds) {
 
   // return if no valid path
   if(best_kset.v == 0) {
-    cout << "ERROR no valid paths for " << seqs[0].name() << (seqs.n_seqs() == 2 ? seqs[1].name() : "") << endl;
+    cout << "ERROR no valid paths for " << seqs.name_str() << endl;
     result.no_path_ = true;
     return result;
   }
@@ -197,60 +201,79 @@ Result JobHolder::Run(Sequences seqs, KBounds kbounds) {
 
   // print debug info
   if(debug_) {
-    cout << "    " << setw(22) << seqs[0].name() << " " << setw(22) << (seqs.n_seqs() == 2 ? seqs[1].name() : "") << "   " << kbounds.vmin << "-" << kbounds.vmax - 1 << "   " << kbounds.dmin << "-" << kbounds.dmax - 1; // exclusive...
-    if(algorithm_ == "viterbi")
+    if(algorithm_ == "viterbi") {
+      cout << "    " << setw(48) << seqs.name_str();
+      cout << "   " << kbounds.vmin << "-" << kbounds.vmax - 1 << "   " << kbounds.dmin << "-" << kbounds.dmax - 1; // exclusive...
       cout << "    best kset: " << setw(4) << best_kset.v << setw(4) << best_kset.d << setw(12) << best_score << endl;
-    else
-      cout << "        " << *total_score << endl;
+    } else {
+      printf("        %9.3f", *total_score);
+      cout << "   " << kbounds.vmin << "-" << kbounds.vmax - 1 << "   " << kbounds.dmin << "-" << kbounds.dmax - 1; // exclusive...
+      cout << "    " << seqs.name_str() << endl;
+    }
   }
 
   result.check_boundaries(best_kset, kbounds);
   if(debug_ && result.boundary_error()) {   // not necessarily a big deal yet -- the bounds get automatical expanded
-    cout << "WARNING maximum at boundary for " << seqs[0].name() << (seqs.n_seqs() == 2 ? seqs[1].name() : "") << endl;
-    cout << "  k_v: " << best_kset.v << "(" << kbounds.vmin << "-" << kbounds.vmax - 1 << ")"
-         << "  k_d: " << best_kset.d << "(" << kbounds.dmin << "-" << kbounds.dmax - 1 << ")" << endl;
-    cout << "    expand to " << result.better_kbounds().stringify() << endl;
+    cout << "      WARNING max at boundary for " << seqs.name_str()
+         << "  k_v: " << best_kset.v << "(" << kbounds.vmin << "-" << kbounds.vmax - 1 << ")"
+         << "  k_d: " << best_kset.d << "(" << kbounds.dmin << "-" << kbounds.dmax - 1 << ")"
+         << "    better: " << result.better_kbounds().stringify() << endl;
+    if(result.could_not_expand())
+      cout << "      WARNING couldn't expand though!" << endl;
   }
 
   return result;
 }
 
 // ----------------------------------------------------------------------------------------
-void JobHolder::FillTrellis(Sequences query_seqs, StrPair query_strs, string gene, double *score, string &origin) {
-  assert(query_strs.first.size() == query_seqs.GetSequenceLength());
+void JobHolder::FillTrellis(Sequences query_seqs, vector<string> query_strs, string gene, double *score, string &origin) {
   *score = -INFINITY;
   // initialize trellis and path
   if(trellisi_.find(gene) == trellisi_.end()) {
-    trellisi_[gene] = map<StrPair, trellis*>();
-    paths_[gene] = map<StrPair, TracebackPath*>();
+    trellisi_[gene] = map<vector<string>, trellis*>();
+    paths_[gene] = map<vector<string>, TracebackPath*>();
   }
   origin = "scratch";
-  if (chunk_cache_) {  // figure out if we've already got a trellis with a dp table which includes the one we're about to calculate (we should, unless this is the first kset)
+  if(chunk_cache_) {   // figure out if we've already got a trellis with a dp table which includes the one we're about to calculate (we should, unless this is the first kset)
     for(auto & query_str_map : trellisi_[gene]) {
-      StrPair tmp_query_strs(query_str_map.first);
-      if (tmp_query_strs.first.find(query_strs.first) == 0) {
-	assert(tmp_query_strs.second.find(query_strs.second) == 0);
-	trellisi_[gene][query_strs] = new trellis(hmms_.Get(gene, debug_), query_seqs, trellisi_[gene][tmp_query_strs]);
-	origin = "chunk";
-	break;
+      vector<string> tmp_query_strs(query_str_map.first);
+      // assert(0);  // fix the below!
+
+      // loop over all the query strings for this trellis to see if they all match
+      bool found_match(true);
+      for(size_t iseq = 0; iseq < tmp_query_strs.size(); ++iseq) {  // NOTE this starts to seem like it might be bottlenecking me when I'm applying it for short d sequences
+        if(tmp_query_strs[iseq].find(query_strs[iseq]) != 0) {
+          found_match = false;
+          break;
+        }
+      }
+
+
+      // if they all match, then use it
+      if(found_match) {
+        for(size_t iseq = 0; iseq < tmp_query_strs.size(); ++iseq)
+          assert(tmp_query_strs[iseq].find(query_strs[iseq]) == 0);
+        trellisi_[gene][query_strs] = new trellis(hmms_.Get(gene, debug_), query_seqs, trellisi_[gene][tmp_query_strs]);
+        origin = "chunk";
+        break;
       }
     }
   }
 
-  if (!trellisi_[gene][query_strs])  // if didn't find a suitable chunk cached trellis
+  if(!trellisi_[gene][query_strs])   // if didn't find a suitable chunk cached trellis
     trellisi_[gene][query_strs] = new trellis(hmms_.Get(gene, debug_), query_seqs);
   trellis *trell(trellisi_[gene][query_strs]); // this pointer's just to keep the name short
 
   if(algorithm_ == "viterbi") {
     trell->Viterbi();
     *score = trell->ending_viterbi_log_prob();  // NOTE still need to add the gene choice prob to this score (it's done in RunKSet)
-    if(trell->ending_viterbi_log_prob() == -INFINITY) {   // no valid path through hmm. TODO fix this in a more general way
+    if(trell->ending_viterbi_log_prob() == -INFINITY) {   // no valid path through hmm
       paths_[gene][query_strs] = nullptr;
       if(debug_ == 2) cout << "                    arg " << gene << " " << *score << " " << origin << endl;
     } else {
       paths_[gene][query_strs] = new TracebackPath(hmms_.Get(gene, debug_));
       trell->Traceback(*paths_[gene][query_strs]);
-      assert(trell->ending_viterbi_log_prob() == paths_[gene][query_strs]->score());  // TODO remove this assertion
+      assert(trell->ending_viterbi_log_prob() == paths_[gene][query_strs]->score());  // NOTE it would be better to just not store the darn score in both the places to start with, rather than worry here about them being the same
       // if(debug_ == 2) PrintPath(query_strs, gene, *score, origin);
     }
     assert(fabs(*score) > 1e-200);
@@ -265,7 +288,7 @@ void JobHolder::FillTrellis(Sequences query_seqs, StrPair query_strs, string gen
 }
 
 // ----------------------------------------------------------------------------------------
-void JobHolder::PrintPath(StrPair query_strs, string gene, double score, string extra_str) {  // NOTE query_str is seq1xseq2 for pair hmm
+void JobHolder::PrintPath(vector<string> query_strs, string gene, double score, string extra_str) {  // NOTE query_str is seq1xseq2 for pair hmm
   if(score == -INFINITY) {
     // cout << "                    " << gene << " " << score << endl;
     return;
@@ -273,10 +296,10 @@ void JobHolder::PrintPath(StrPair query_strs, string gene, double score, string 
   vector<string> path_names = paths_[gene][query_strs]->name_vector();
   if(path_names.size() == 0) {
     if(debug_) cout << "                     " << gene << " has no valid path" << endl;
-    return; // TODO fix this upstream. well, it isn't *broken*, but, you know, could be cleaner
+    return;
   }
   assert(path_names.size() > 0);  // this will happen if the ending viterbi prob is 0, i.e. if there's no valid path through the hmm (probably the sequence or hmm lengths are screwed up)
-  assert(path_names.size() == query_strs.first.size());
+  assert(path_names.size() == query_strs[0].size());
   size_t left_insert_length = GetInsertLength("left", path_names);
   size_t right_insert_length = GetInsertLength("right", path_names);
   size_t left_erosion_length = GetErosionLength("left", path_names, gene);
@@ -288,12 +311,12 @@ void JobHolder::PrintPath(StrPair query_strs, string gene, double score, string 
     modified_seq = "i" + modified_seq;
   for(size_t i = 0; i < right_insert_length; ++i)
     modified_seq = modified_seq + "i";
-  assert(modified_seq.size() == query_strs.first.size());
-  assert(germline.size() + left_insert_length - left_erosion_length - right_erosion_length + right_insert_length == query_strs.first.size());
+  assert(modified_seq.size() == query_strs[0].size());
+  assert(germline.size() + left_insert_length - left_erosion_length - right_erosion_length + right_insert_length == query_strs[0].size());
   TermColors tc;
   cout
       << "                    "
-      << (left_erosion_length > 0 ? ".." : "  ") << tc.ColorMutants("red", query_strs.first, modified_seq, query_strs.second) << (right_erosion_length > 0 ? ".." : "  ")
+      << (left_erosion_length > 0 ? ".." : "  ") << tc.ColorMutants("red", modified_seq, "", query_strs) << (right_erosion_length > 0 ? ".." : "  ")
       << "  " << extra_str
       // NOTE this doesn't include the overall gene prob!
       // << setw(12) << paths_[gene][query_strs]->score()
@@ -311,9 +334,9 @@ void JobHolder::PushBackRecoEvent(Sequences &seqs, KSet kset, map<string, string
 // ----------------------------------------------------------------------------------------
 RecoEvent JobHolder::FillRecoEvent(Sequences &seqs, KSet kset, map<string, string> &best_genes, double score) {
   RecoEvent event;
-  StrPair seq_strs;
+  vector<string> seq_strs(seqs.n_seqs(), "");  // build up these strings summing over each regions
   for(auto & region : gl_.regions_) {
-    StrPair query_strs(GetQueryStrs(seqs, kset, region));
+    vector<string> query_strs(GetQueryStrs(seqs, kset, region));
     if(best_genes.find(region) == best_genes.end()) {
       seqs.Print();
     }
@@ -323,10 +346,10 @@ RecoEvent JobHolder::FillRecoEvent(Sequences &seqs, KSet kset, map<string, strin
     if(path_names.size() == 0) {
       if(debug_) cout << "                     " << gene << " has no valid path" << endl;
       event.SetScore(-INFINITY);
-      return event; // TODO fix this upstream. well, it isn't *broken*, but, you know, could be cleaner
+      return event;
     }
     assert(path_names.size() > 0);
-    assert(path_names.size() == query_strs.first.size());
+    assert(path_names.size() == query_strs[0].size());
     event.SetGene(region, gene);
 
     // set right-hand deletions
@@ -334,43 +357,26 @@ RecoEvent JobHolder::FillRecoEvent(Sequences &seqs, KSet kset, map<string, strin
     // and left-hand deletions
     event.SetDeletion(region + "_5p", GetErosionLength("left", path_names, gene));
 
-    SetInsertions(region, query_strs.first, path_names, &event);
+    SetInsertions(region, query_strs[0], path_names, &event);  // NOTE this sets the insertion *only* according to the *first* sequence. Which makes sense at the moment, since the RecoEvent class is only designed to represent a single sequence
 
-    seq_strs.first += query_strs.first;
-    seq_strs.second += query_strs.second;
+    for(size_t iseq = 0; iseq < seq_strs.size(); ++iseq)
+      seq_strs[iseq] += query_strs[iseq];
   }
 
-  // if (seqs_->size() > 0)  // erm, this segfaults a.t.m. I must be forgetting something somewhere else
-  //   assert((*seqs_)[0].name() == (*seqs_)[1].name());  // er, another somewhat neurotic consistency check
-
-  event.SetSeq(seqs[0].name(), seq_strs.first);
-  if(seqs.n_seqs() == 2) {
-    // assert((*seqs_)[0].name() == (*seqs_)[1].name());  don't recall at this point precisely why it was that I wanted this here
-    event.SetSecondSeq(seqs[1].name(), seq_strs.second);
-  }
+  event.SetSeq(seqs[0].name(), seq_strs[0]);
+  for(size_t iseq = 1; iseq < seq_strs.size(); ++iseq)
+    event.AddAuxiliarySeqs(seqs[iseq].name(), seq_strs[iseq]);
   event.SetScore(score);
   return event;
 }
 
 // ----------------------------------------------------------------------------------------
-StrPair JobHolder::GetQueryStrs(Sequences &seqs, KSet kset, string region) {
+vector<string> JobHolder::GetQueryStrs(Sequences &seqs, KSet kset, string region) {
   Sequences query_seqs(GetSubSeqs(seqs, kset, region));
-  StrPair query_strs;
-  query_strs.first = query_seqs[0].undigitized();
-  if(query_seqs.n_seqs() == 2) {   // the Sequences class should already ensure that both seqs are the same length
-    assert(seqs.n_seqs() == 2);
-    query_strs.second = query_seqs[1].undigitized();
-  }
+  vector<string> query_strs;
+  for(size_t iseq = 0; iseq < seqs.n_seqs(); ++iseq)
+    query_strs.push_back(query_seqs[iseq].undigitized());
   return query_strs;
-}
-
-// ----------------------------------------------------------------------------------------
-// add two numbers, treating -INFINITY as zero, i.e. calculates log a*b = log a + log b, i.e. a *and* b
-double JobHolder::AddWithMinusInfinities(double first, double second) {
-  if(first == -INFINITY || second == -INFINITY)
-    return -INFINITY;
-  else
-    return first + second;
 }
 
 // ----------------------------------------------------------------------------------------
@@ -384,14 +390,14 @@ void JobHolder::RunKSet(Sequences &seqs, KSet kset, map<KSet, double> *best_scor
   if(debug_ == 2)
     cout << "            " << kset.v << " " << kset.d << " -------------------" << endl;
   for(auto & region : gl_.regions_) {
-    StrPair query_strs(GetQueryStrs(seqs, kset, region));
+    vector<string> query_strs(GetQueryStrs(seqs, kset, region));
 
     TermColors tc;
     if(debug_ == 2) {
       if(algorithm_ == "viterbi") {
-        cout << "              " << region << " query " << tc.ColorMutants("purple", query_strs.second, query_strs.first) << endl;
-        if(seqs.n_seqs() == 2)
-          cout << "              " << region << " query " << tc.ColorMutants("purple", query_strs.first, query_strs.second) << endl;
+        cout << "              " << region << " query " << query_strs[0] << endl;
+        for(size_t is = 1; is < query_strs.size(); ++is)
+          cout << "              " << region << " query " << tc.ColorMutants("purple", query_strs[is], query_strs[0]) << endl;  // use the first query_str as reference sequence... could just as well use any other
       } else {
         cout << "              " << region << endl;
       }
@@ -405,26 +411,26 @@ void JobHolder::RunKSet(Sequences &seqs, KSet kset, map<KSet, double> *best_scor
         continue;
       igene++;
 
-      if(region == "v" && query_strs.first.size() > gl_.seqs_[gene].size()) { // query sequence too long for this v version to make any sense (ds and js have inserts so this doesn't affect them)
+      if(region == "v" && query_strs[0].size() > gl_.seqs_[gene].size()) { // query sequence too long for this v version to make any sense (ds and js have inserts so this doesn't affect them)
         if(debug_ == 2) cout << "                     " << gene << " too short" << endl;
         n_short_v++;
         continue;
       }
-      if(query_strs.first.size() < gl_.seqs_[gene].size() - 10)   // entry into the left side of the v hmm is a little hacky, and is governed by a gaussian with width 5 (hmmwriter::fuzz_around_v_left_edge)
+      if(query_strs[0].size() < gl_.seqs_[gene].size() - 10)   // entry into the left side of the v hmm is a little hacky, and is governed by a gaussian with width 5 (hmmwriter::fuzz_around_v_left_edge)
         n_long_erosions++;
 
       double *gene_score(&all_scores_[gene][query_strs]);  // pointed-to value is already set if we have this trellis cached, otherwise not
       bool already_cached = trellisi_.find(gene) != trellisi_.end() && trellisi_[gene].find(query_strs) != trellisi_[gene].end();
       string origin("ARG");
       if(already_cached) {
-	origin = "cached";
+        origin = "cached";
       } else {
         FillTrellis(subseqs[region], query_strs, gene, gene_score, origin);  // sets *gene_score to uncorrected score
-        double gene_choice_score = log(hmms_.Get(gene, debug_)->overall_prob());  // TODO think through this again, and make sure it's correct for forward score, as well. I mean, I *think* it's right, but I could stand to go over it again
+        double gene_choice_score = log(hmms_.Get(gene, debug_)->overall_prob());
         *gene_score = AddWithMinusInfinities(*gene_score, gene_choice_score);  // then correct it for gene choice probs
       }
       if(debug_ == 2 && algorithm_ == "viterbi")
-	PrintPath(query_strs, gene, *gene_score, origin);
+        PrintPath(query_strs, gene, *gene_score, origin);
 
       // set regional total scores
       regional_total_scores[region] = AddInLogSpace(*gene_score, regional_total_scores[region]);  // (log a, log b) --> log a+b, i.e. here we are summing probabilities in log space, i.e. a *or* b
@@ -456,31 +462,25 @@ void JobHolder::RunKSet(Sequences &seqs, KSet kset, map<KSet, double> *best_scor
   }
 
   (*best_scores)[kset] = AddWithMinusInfinities(regional_best_scores["v"], AddWithMinusInfinities(regional_best_scores["d"], regional_best_scores["j"]));  // i.e. best_prob = v_prob * d_prob * j_prob (v *and* d *and* j)
-  // cout << "adding "
-  //      << setw(12) << regional_best_scores["v"]
-  //      << setw(12) << regional_best_scores["d"]
-  //      << setw(12) << regional_best_scores["j"]
-  //      << " = " << (*best_scores)[kset]
-  //      << endl;
   (*total_scores)[kset] = AddWithMinusInfinities(regional_total_scores["v"], AddWithMinusInfinities(regional_total_scores["d"], regional_total_scores["j"]));
 }
 
 // ----------------------------------------------------------------------------------------
 void JobHolder::SetInsertions(string region, string query_str, vector<string> path_names, RecoEvent *event) {
   Insertions ins;
-  for (auto &insertion : ins[region]) {
+  for(auto & insertion : ins[region]) {  // loop over the boundaries (vd and dj)
     string side(insertion == "jf" ? "right" : "left");
     size_t length(GetInsertLength(side, path_names));
-    string inserted_bases = query_str.substr(GetInsertStart(side, path_names.size(), length), length);  // TODO this is wrong for pair hmms
+    string inserted_bases = query_str.substr(GetInsertStart(side, path_names.size(), length), length);
     event->SetInsertion(insertion, inserted_bases);
   }
 }
 
 // ----------------------------------------------------------------------------------------
 size_t JobHolder::GetInsertStart(string side, size_t path_length, size_t insert_length) {
-  if (side == "left") {
+  if(side == "left") {
     return 0;
-  } else if (side == "right") {
+  } else if(side == "right") {
     return path_length - insert_length;
   } else {
     throw runtime_error("ERROR side must be left or right, not \"" + side + "\"");
@@ -491,19 +491,19 @@ size_t JobHolder::GetInsertStart(string side, size_t path_length, size_t insert_
 // ----------------------------------------------------------------------------------------
 size_t JobHolder::GetInsertLength(string side, vector<string> names) {
   size_t n_inserts(0);
-  if (side == "left") {
-    for (auto &name: names) {
-      if (name.find("insert") == 0)
-	++n_inserts;
+  if(side == "left") {
+    for(auto & name : names) {
+      if(name.find("insert") == 0)
+        ++n_inserts;
       else
-	break;
+        break;
     }
-  } else if (side == "right") {
-    for (size_t ip = names.size()-1; ip>=0; --ip)
-      if (names[ip].find("insert") == 0)
-	++n_inserts;
+  } else if(side == "right") {
+    for(size_t ip = names.size() - 1; ip >= 0; --ip)
+      if(names[ip].find("insert") == 0)
+        ++n_inserts;
       else
-	break;
+        break;
   } else {
     throw runtime_error("ERROR side must be left or right, not \"" + side + "\"");
   }
@@ -517,17 +517,17 @@ size_t JobHolder::GetErosionLength(string side, vector<string> names, string gen
 
   // first check if we eroded the entire sequence. If so we can't say how much was left and how much was right, so just (integer) divide by two (arbitrarily giving one side the odd base if necessary)
   bool its_inserts_all_the_way_down(true);
-  for (auto &name : names) {
-    if (name.find("insert") != 0) {
+  for(auto & name : names) {
+    if(name.find("insert") != 0) {
       assert(name.find("IGH") == 0);  // Trust but verify, my little ducky, trust but verify.
       its_inserts_all_the_way_down = false;
       break;
     }
   }
-  if (its_inserts_all_the_way_down) {  // TODO here (*and* below) do something better than floor/ceil to divide it up.
-    if (side == "left")
+  if(its_inserts_all_the_way_down) {   // entire sequence is inserts, so there's no way to tell which part is a left erosion and which is a right erosion
+    if(side == "left")
       return floor(float(germline.size()) / 2);
-    else if (side == "right")
+    else if(side == "right")
       return ceil(float(germline.size()) / 2);
     else
       throw runtime_error("ERROR bad side: " + side);
@@ -535,22 +535,22 @@ size_t JobHolder::GetErosionLength(string side, vector<string> names, string gen
 
   // find the index in <names> up to which we eroded
   size_t istate(0);  // index (in path) of first non-eroded state
-  if (side=="left") { // to get left erosion length we look at the first non-insert state in the path
-    for (size_t il=0; il<names.size(); ++il) {  // loop over each state from left to right
-      if (names[il].find("insert") == 0) {  // skip any insert states on the left
-	continue;
+  if(side == "left") { // to get left erosion length we look at the first non-insert state in the path
+    for(size_t il = 0; il < names.size(); ++il) { // loop over each state from left to right
+      if(names[il].find("insert") == 0) {   // skip any insert states on the left
+        continue;
       } else {  // found the leftmost non-insert state -- that's the one we want
         istate = il;
         break;
       }
     }
-  } else if (side=="right") {  // and for the righthand one we need the last non-insert state
-    for (size_t il = names.size()-1; il>=0; --il) {
-      if (names[il].find("insert") == 0) {  // skip any insert states on the left
-	continue;
+  } else if(side == "right") { // and for the righthand one we need the last non-insert state
+    for(size_t il = names.size() - 1; il >= 0; --il) {
+      if(names[il].find("insert") == 0) {   // skip any insert states on the left
+        continue;
       } else {  // found the leftmost non-insert state -- that's the one we want
-	istate = il;
-	break;
+        istate = il;
+        break;
       }
     }
   } else {

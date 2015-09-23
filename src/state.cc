@@ -33,34 +33,38 @@ void State::Parse(YAML::Node node, vector<string> state_names, Tracks trks) {
     else
       transitions_->push_back(trans);
   }
-  // TODO use something cleverer than a random hard coded EPS
+  // NOTE it would be better to use something cleverer than a hard coded EPS that I just pulled ooma
   if(fabs(total - 1.0) >= EPS) { // make sure transition probs sum to 1.0
     cerr << "ERROR normalization failed on transitions in state \"" << name_ << "\"" << endl;
     cerr << node << endl;
     throw runtime_error("configuration");
   }
 
+  // emissions
   if(name_ == "init")
     return;
 
-  if(node["emissions"])
-    emission_.Parse(node["emissions"], "single", trks);
-  if(node["pair_emissions"])
-    pair_emission_.Parse(node["pair_emissions"], "pair", trks);
-  if(!node["emissions"] && !node["pair_emissions"]) {
+  // make sure at least one emission was specified
+  if(node["emissions"].IsNull()) {
     stringstream node_ss;
     node_ss << node;
     throw runtime_error("ERROR no emissions found in " + node_ss.str());
   }
+  emission_.Parse(node["emissions"], trks);
 }
 
 // ----------------------------------------------------------------------------------------
 double State::emission_logprob(Sequences *seqs, size_t pos) {
-  if(seqs->n_seqs() == 2) {
-    return pair_emission_.score(seqs, pos);
+  if(seqs->n_seqs() == 1) {
+    // NOTE they're log probs, not scores, but I haven't yet managed to eliminate all the old 'score' names
+    return emission_.score(seqs->get_ptr(0), pos);  // get_ptr shenaniganery is to avoid performance hit from pass-by-value. Yes, I will at some point make it more elegant!
   } else {
-    assert(seqs->n_seqs() == 1);
-    return emission_.score(seqs->get_ptr(0), pos);
+    assert(seqs->n_seqs() > 1);
+    double log_prob = emission_.score(seqs->get_ptr(0), pos);  // initialize <log_prob> for the emission from the first sequence
+    for(size_t iseq = 1; iseq < seqs->n_seqs(); ++iseq)   // then loop over the rest of the sequences
+      // add to <log_prob> the emission log prob for the <iseq>th sequence, i.e. prob1 *and* prob2
+      log_prob = AddWithMinusInfinities(log_prob, emission_.score(seqs->get_ptr(iseq), pos));
+    return log_prob;
   }
 }
 
@@ -82,8 +86,6 @@ void State::Print() {
 
   cout << "  emissions:" << endl;;
   emission_.Print();
-  cout << "  pair emissions:" << endl;
-  pair_emission_.Print();
 }
 
 // ----------------------------------------------------------------------------------------

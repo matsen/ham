@@ -3,11 +3,8 @@
 namespace ham {
 
 // ----------------------------------------------------------------------------------------
-Track::Track(string name, size_t n_seqs, vector<string> symbols) :
-  name_(name),
-  n_seqs_(n_seqs),
-  track_index_(numeric_limits<size_t>::max()) {
-  assert(n_seqs_ == 1 || n_seqs_ == 2);
+Track::Track(string name, vector<string> symbols) :
+  name_(name) {
   AddSymbols(symbols);
 }
 
@@ -26,9 +23,9 @@ void Track::AddSymbols(vector<string> &symbols) {
 
 // ----------------------------------------------------------------------------------------
 uint8_t Track::symbol_index(const string &symbol) {
-  // if(symbol_indices_.count(symbol) == 0) {
-  //   throw runtime_error("ERROR symbol '" + symbol + "' not found among " + Stringify());
-  // }
+  if(symbol_indices_.count(symbol) == 0) {
+    throw runtime_error("ERROR symbol '" + symbol + "' not found among " + Stringify());
+  }
   return symbol_indices_[symbol];
 }
 

@@ -16,13 +16,13 @@ using namespace std;
 // ----------------------------------------------------------------------------------------
 class Insertions {
 public:
-  Insertions() : v_{"fv"}, d_{"vd"}, j_{"dj", "jf"} {
+  Insertions() : v_ {"fv"}, d_ {"vd"}, j_ {"dj", "jf"} {
     insertions_["v"] = v_;
     insertions_["d"] = d_;
     insertions_["j"] = j_;
   }
   vector<string> operator[](string region) { return insertions_[region]; }
-  
+
 private:
   vector<string> v_, d_, j_;
   map<string, vector<string> > insertions_;
@@ -57,7 +57,6 @@ public:
 
   // ----------------------------------------------------------------------------------------
   // get region from gene name, e.g. IGHD1-1*01 --> d
-  // TODO don't have this in two places, idiot boy
   string GetRegion(string gene) {
     assert(gene.find("IGH") != string::npos);
     char region_char(tolower(gene[3]));
@@ -66,24 +65,30 @@ public:
     return region;
   }
   // ----------------------------------------------------------------------------------------
-  string ColorMutants(string color, string ref_1, string seq, string ref_2 = "") { // return <seq> with mutant bases w.r.t. <ref_1> escaped to appear red (and 'i', inserts, yellow) in bash terminal
-    if(ref_1.size() == 0)
-      return seq;
-    if(ref_1.size() != seq.size()) {
-      cout << "ERROR seqs not same length in color_mutants: " << ref_1 << endl
-           << "                                              " << seq << endl;
+  string ColorMutants(string color, string seq, string ref_1 = "", vector<string> other_refs = {}) {
+    // Return <seq> with mutant bases w.r.t. <ref_1> escaped to appear red (and 'i', inserts, yellow) in bash terminal.
+    // If <refs> are specified, use bold text and reverse video to show if <seq> is muted w/respect to more than one ref
+    if(ref_1 != "")
+      other_refs.push_back(ref_1);  // only doing it this way so we can call it without specifying <other_refs>
+    for(auto & ref : other_refs) {
+      if(ref.size() != seq.size()) {
+        throw runtime_error("ERROR seqs not same length in color_mutants: " + ref + "\n                                              " + seq);
+      }
     }
+
     string return_str;
     for(size_t inuc = 0; inuc < seq.size(); ++inuc) {
       if(seq[inuc] == 'i') {
         return_str += Color("yellow", seq.substr(inuc, 1));
-      } else if(seq[inuc] == ref_1[inuc]) {   // nuc same as ref 1
-        if(ref_2.size() == 0 || seq[inuc] == ref_2[inuc])
+      } else {
+        int ndiff(0);  // number of reference sequences that differ at base inuc
+        for(auto & ref : other_refs) {
+          if(seq[inuc] != ref[inuc])
+            ndiff += 1;
+        }
+        if(ndiff == 0)
           return_str += seq[inuc];
-        else
-          return_str += Color(color, seq.substr(inuc, 1));
-      } else {  // nuc different to ref 1
-        if(ref_2.size() == 0 || seq[inuc] == ref_2[inuc])
+        else if(ndiff == 1)
           return_str += Color(color, seq.substr(inuc, 1));
         else
           return_str += Color("reverse", Color(color, seq.substr(inuc, 1)));
@@ -182,8 +187,8 @@ public:
   map<string, string> insertions_;
   string seq_name_;
   string seq_;
-  string second_seq_name_;
-  string second_seq_;
+  vector<string> auxiliary_seq_names_;
+  vector<string> auxiliary_seqs_;
   float score_;
 
   bool operator < (const RecoEvent& rhs) const { return (score_ < rhs.score_); }  // return true if this event is more likely than the rhs event
@@ -192,19 +197,20 @@ public:
   void SetDeletion(string name, size_t len) { deletions_[name] = len; }
   void SetInsertion(string name, string insertion) { insertions_[name] = insertion; }
   void SetSeq(string seq_name, string seq) { seq_name_ = seq_name; seq_ = seq; }
-  void SetSecondSeq(string seq_name, string seq) {
+  void AddAuxiliarySeqs(string name, string seq) {  // NOTE this class should in general be treated as representing a *single* event with a *single* sequence. It's just that we allow the possiblity here of attaching auxiliary sequences, but e.g. the insertions should *not* be assumed to correspond to these other sequences
     assert(seq.size() == seq_.size());  // make sure we already have a first seq, and also that the new seq is the same size
-    second_seq_name_ = seq_name;
-    second_seq_ = seq;
+    auxiliary_seq_names_.push_back(name);
+    auxiliary_seqs_.push_back(seq);
   }
 
   void SetScore(double score) { score_ = score; }
   void Clear() { genes_.clear(); deletions_.clear(); insertions_.clear(); }
-  void Print(GermLines &germlines, size_t cyst_position = 0, size_t final_tryp_position = 0, bool one_line = false, bool print_second_seq = false, string extra_indent = "") {
+  void Print(GermLines &germlines, size_t cyst_position = 0, size_t final_tryp_position = 0, bool one_line = false, string extra_indent = "") {
     assert(0);  // this needs to be updated to match the python version
-    string print_seq = seq_;
-    if(print_second_seq)
-      print_seq = second_seq_;
+    string print_seq = seq_;  // this variable is a relic of past transgressions, should be redundantized when I finish what I'm doing
+    // need to update this to allow printing of auxiliary sequences... or not. Maybe just do it in the python version. I don't really use this anymore, actually
+    // if(print_second_seq)
+    //   print_seq = second_seq_;
 
     if(score_ == -INFINITY) {
       cout << "    " << extra_indent << score_ << endl;
@@ -316,14 +322,14 @@ public:
     d_str += eroded_seqs["d"];
     int ij_max = original_seqs["j"].size() - deletions_["j_5p"] + insertions_["dj"].size() - deletions_["d_3p"];
     // assert(ij_max>=0);
-    if(ij_max < 0)   // TODO fix this somewhat more permanently
+    if(ij_max < 0)
       ij_max = 0;
     for(int ij = 0; ij < ij_max; ++ij)
       d_str += " ";
     string vj_str(eroded_seqs["v"]);
     int ivj_max = germline_j_start - germline_v_end - 2;
     // assert(ivj_max >= 0);
-    if(ivj_max < 0)   // TODO fix this somewhat more permanently
+    if(ivj_max < 0)
       ivj_max = 0;
     for(int ivj = 0; ivj < ivj_max; ++ivj)
       vj_str += " ";

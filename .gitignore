@@ -1,5 +1,5 @@
 /.sconsign.dblite
 /_build/
-/ham
 /hample
 *.o
+bcrham
